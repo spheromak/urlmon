@@ -3,50 +3,56 @@ package main
 import (
 	"fmt"
 	"github.com/coreos/go-etcd/etcd"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/facebookgo/flagenv"
 	"github.com/jessevdk/go-flags"
-	"log"
-
 	"github.com/rcrowley/go-metrics"
 	"github.com/rcrowley/go-metrics/librato"
+	"log"
+	"path"
+	"strings"
+	//	"net/http"
+	"net/url"
+	"os"
 	"regexp"
 	"time"
-	//	"net/http"
 )
 
 type Options struct {
-	etcd_server   []string `short:"e" description:"Etcd Server url. Multiple servers can be specified" default:"http://localhost:4001"`
-	sensu_server  string   `short:"s" description:Sensu server url default:"http://localhost:8080"`
-	key_prefix    string   `short:"k" description:"the prefix to use in etcd for storing check urls" default:"/urlmon"`
-	librato_user  string   `short:"u" description:"librato user"`
-	librato_token string   `short:"t" description:"librato token"`
+	EtcdServer   []string `short:"e" long:"etcd-server" description:"Etcd Server url. Multiple servers can be specified" default:"http://localhost:4001"`
+	KeyPrefix    string   `short:"k" long:"etcd-key" description:"the prefix to use in etcd for storing check urls" default:"/urlmon"`
+	LibratoUser  string   `short:"u" long:"librato-user" description:"librato user"`
+	LibratoToken string   `short:"t" long:"librato-token"  description:"librato token"`
+	SensuServer  string   `short:"s" long:"sensu-server" description:"Sensu server url" default:"http://localhost:8080"`
 }
 
 type Check struct {
 	Id           string
-	URL          string
+	URL          *url.URL
 	Registry     metrics.Registry
 	Content      string
-	ContentRegex regexp.Regexp
+	Level        string
+	ContentRegex *regexp.Regexp
 }
 
-var Checks []Check
-var opts Options
-var parser = flags.NewParser(&opts, flags.Default)
-var UseUpperCaseFlagNames = true
+var (
+	Checks                []Check
+	opts                  Options
+	UseUpperCaseFlagNames = true
+)
 
 // libratoMetrics starts the goroutine for reporting metrics on this check to librato
-func (c *Check) libratoMetrics(done <-chan struct{}) {
+func (c *Check) libratoMetrics(done *chan struct{}) {
 	go func() {
 		select {
-		case <-done:
+		case <-*done:
 			return
 		default:
 			// start the metrics collector should be per-check
 			librato.Librato(c.Registry,
-				60*time.Second,     // interval
-				opts.librato_user,  // account owner email address
-				opts.librato_token, // Librato API token
+				60*time.Second,    // interval
+				opts.LibratoUser,  // account owner email address
+				opts.LibratoToken, // Librato API token
 				// This should be per check I think
 				c.Id,             // source
 				[]float64{95},    // precentiles to send
@@ -56,40 +62,104 @@ func (c *Check) libratoMetrics(done <-chan struct{}) {
 	}()
 }
 
-func loadChecks(client *etcd.Client) {
-	done := make(chan struct{})
+// createCheck populates check struct with data from etcd check
+func createCheck(node *etcd.Node, done *chan struct{}) *Check {
+	// create a check
+	c := Check{Id: path.Base(node.Key)}
+	for _, child := range node.Nodes {
+		switch strings.ToUpper(path.Base(child.Key)) {
+		case "URL":
+			u, err := url.Parse(child.Value)
+			if err != nil {
+				log.Fatalf("Url isn't valid for key: %s, %s", node.Key, err)
+			}
+			c.URL = u
+		case "CONTENT":
+			c.Content = child.Value
+		case "REGEX":
+			r, err := regexp.Compile(child.Value)
+			if err != nil {
+				log.Fatalf("couldn't compile regex for Check: %s, %s", node.Key, err)
+			}
+			c.ContentRegex = r
+		case "LEVEL":
+			c.Level = strings.ToUpper(node.Value)
+		}
+	}
 
+	if opts.LibratoUser != "" {
+		c.libratoMetrics(done)
+	}
+	return &c
+}
+
+// loadChecks reads etcd and populates the Checks Slice
+func loadChecks(client *etcd.Client, done *chan struct{}) {
 	// create etcd watch chan for reparsing config
-	resp, err := client.Get(fmt.Sprint("%s/checks", opts.key_prefix), false, false)
+	resp, err := client.Get(fmt.Sprintf("%s/checks", opts.KeyPrefix), true, true)
 	if err != nil {
 		log.Fatalf("Problem fetching Checks from etcd: %s", err)
 	}
 
+	Checks = nil // this clears the slice. we will have to realloc that mem, but gc should get round to it.
 	for _, n := range resp.Node.Nodes {
-		// if its first time and we have no checks load it up
-		if len(Checks) > 0 {
-			log.Printf("%s: %s\n", n.Key, n.Value)
-		} else {
+		// these top level nodes should be a directory
+		if !n.Dir {
+			log.Printf("Error loading config %s is not a dir, skipping", n.Key)
+			continue
+		}
+
+		// if Checks is populated then we want to shutdown monitors and rebuild
+		// only if we should be setting up librato metrics
+		if opts.LibratoUser != "" {
+			log.Println("waiting for checkers to stop")
 			for _, _ = range Checks {
-				done <- struct{}{}
+				*done <- struct{}{}
 			}
-			log.Printf("%s: %s\n", n.Key, n.Value)
+		}
+		log.Printf("Loading: %s: %s\n", n.Key, n.Value)
+		Checks = append(Checks, *createCheck(n, done))
+	}
+
+	spew.Dump(Checks)
+}
+
+// Create our Etcd Dir structure
+func setupEtcd(client *etcd.Client) {
+	for _, path := range []string{opts.KeyPrefix, fmt.Sprintf("%s/checks", opts.KeyPrefix)} {
+		if _, err := client.Get(path, false, false); err != nil {
+			log.Printf("Creating dir in etcd: %s ", path)
+			if _, err := client.CreateDir(path, 0); err != nil {
+				log.Fatalf("Couldn't create etcd dir: %s, %s ", err)
+			}
 		}
 	}
 }
 
 func main() {
-	flagenv.Parse()
-	parser.Parse()
+	if _, err := flags.Parse(&opts); err != nil {
+		if err.(*flags.Error).Type == flags.ErrHelp {
+			os.Exit(0)
+		} else {
+			log.Println(err)
+			os.Exit(1)
+		}
+	}
 
-	etcdClient := etcd.NewClient(opts.etcd_server)
+	etcdClient := etcd.NewClient(opts.EtcdServer)
+	setupEtcd(etcdClient)
+
 	watchChan := make(chan *etcd.Response)
-	go etcdClient.Watch(fmt.Sprintf("%s/", opts.key_prefix), 0, false, watchChan, nil)
-	loadChecks(etcdClient)
+	// setup recursive watch of the keyspace
+	go etcdClient.Watch(opts.KeyPrefix, 0, true, watchChan, nil)
+
+	done := make(chan struct{})
+	loadChecks(etcdClient, &done)
 
 	// loop and reload checks when etcd changes
 	for {
-		<-watchChan
-		loadChecks(etcdClient)
+		r := <-watchChan
+		log.Printf("Reloading checks from etcd, triggered by '%s' on '%s' with value: '%s' ", r.Action, r.Node.Key, r.Node.Value)
+		loadChecks(etcdClient, &done)
 	}
 }
