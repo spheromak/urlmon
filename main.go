@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/coreos/go-etcd/etcd"
 	_ "github.com/davecgh/go-spew/spew"
@@ -35,12 +36,13 @@ const (
 )
 
 type Options struct {
-	Etcd   []string `short:"e" long:"etcd" description:"Etcd Server url. Multiple servers can be specified" default:"http://localhost:4001"`
-	Prefix string   `short:"p" long:"prefix" description:"the prefix to use in etcd for storing check urls" default:"/urlmon"`
-	User   string   `short:"u" long:"user" description:"librato user"`
-	Token  string   `short:"t" long:"token"  description:"librato token"`
-	Port   int      `short:"P" long:"port"  description:"The port to start the status interface on" default:"9731"`
-	Sensu  string   `short:"s" long:"sensu" description:"Sensu client address" default:"localhost:3030"`
+	Etcd     string `short:"e" long:"etcd" description:"Etcd Server url. Comma separate multiple servers" default:"http://localhost:4001"`
+	Prefix   string `short:"p" long:"prefix" description:"the prefix to use in etcd for storing check urls" default:"/urlmon"`
+	User     string `short:"u" long:"user" description:"librato user"`
+	Token    string `short:"t" long:"token"  description:"librato token"`
+	Port     int    `short:"P" long:"port"  description:"The port to start the status interface on" default:"9731"`
+	Sensu    string `short:"s" long:"sensu" description:"Sensu client address" default:"localhost:3030"`
+	Handlers string `short:"H" long:"handlers" description:"Sensu handler to use for alert message. comma separatemultiples" default:"hipchat"`
 }
 
 type Check struct {
@@ -52,14 +54,14 @@ type Check struct {
 	Interval     int
 	Splay        int
 	Registry     metrics.Registry
-	shutdown     bool
+	shutdown     chan struct{}
 }
 
 type SensuEvent struct {
-	Name     string   `json:name`
-	Handlers []string `json:handlers`
-	Output   string   `json:output`
-	Status   int      `json:status`
+	Name     string   `json:"name"`
+	Handlers []string `json:"handlers"`
+	Output   string   `json:"output"`
+	Status   int      `json:"status"`
 }
 
 type LazyResponse map[string]interface{}
@@ -92,13 +94,13 @@ func (c *Check) reportStatus(status int, msg string) {
 
 	// for now handler is hardcode TODO: move it to default/param/env
 	event := SensuEvent{
-		Name:     c.URL.String(),
-		Handlers: []string{"hipchat"},
-		Output:   msg,
+		Name:     c.Id,
+		Output:   fmt.Sprintf("%s::%s", msg, c.URL),
+		Handlers: strings.Split(opts.Handlers, ","),
 		Status:   status,
 	}
 
-	go event.send()
+	event.send()
 }
 
 // Monitor sets up the monitoring loop
@@ -111,28 +113,33 @@ func (c *Check) Monitor() {
 
 	metrics.Register(fmt.Sprintf("urlmon.request.%s", c.Id), g)
 	// loop for shutdown and spaly/sleep
-	for c.shutdown != true {
-		// we sleep first here so that on startup we don't overwhelm
-		s := time.Duration(c.Interval) * time.Second
-		time.Sleep(s)
+	for {
+		select {
+		case <-c.shutdown:
+			log.Printf("%s Shutdown", c.Id)
+			return
+		default:
+			// we sleep first here so that on startup we don't overwhelm
+			s := time.Duration(c.Interval) * time.Second
+			time.Sleep(s)
 
-		// time.Since reports in nanoseocnds
-		start := time.Now()
-		r, err := http.Get(c.URL.String())
-		g.Update(int64(time.Since(start)))
-		if err != nil {
-			c.reportStatus(1, err.Error())
-		} else {
-			r.Body.Close()
-			c.reportStatus(0, r.Status)
+			// time.Since reports in nanoseocnds
+			start := time.Now()
+			r, err := http.Get(c.URL.String())
+			g.Update(int64(time.Since(start)))
+			if err != nil {
+				c.reportStatus(2, err.Error())
+			} else {
+				r.Body.Close()
+				c.reportStatus(0, r.Status)
+			}
 		}
 	}
 }
 
 // easy way to signal the monitor to shutdown
 func (c *Check) Shutdown() {
-
-	c.shutdown = true
+	c.shutdown <- struct{}{}
 }
 
 // String Adds stringer interface to the lazy response
@@ -197,13 +204,15 @@ func valueStr(value string) int {
 func createCheck(node *etcd.Node) (*Check, error) {
 	// create a check
 	c := Check{Id: path.Base(node.Key)}
+	c.shutdown = make(chan struct{}, 1)
 	for _, child := range node.Nodes {
 		log.Printf("  - %s", path.Base(child.Key))
 		switch strings.ToUpper(path.Base(child.Key)) {
 		case "URL":
 			u, err := url.Parse(child.Value)
 			if err != nil {
-				log.Fatalf("Url isn't valid for key: %s, %s", node.Key, err.Error())
+				log.Printf("Url isn't valid for key: %s, %s", node.Key, err.Error())
+				continue
 			}
 			c.URL = u
 		case "CONTENT":
@@ -237,6 +246,9 @@ func createCheck(node *etcd.Node) (*Check, error) {
 	if c.Level == "" {
 		c.Level = DefaultAlertLevel
 	}
+	if c.URL == nil {
+		return &c, errors.New("No URL for check")
+	}
 
 	// BUG: Checks may be malformed in various ways, createCheck needs to implment more validations before returning the check
 	return &c, nil
@@ -244,7 +256,6 @@ func createCheck(node *etcd.Node) (*Check, error) {
 
 // loadChecks reads etcd popilates Checks, and starts their monitor
 func loadChecks(client *etcd.Client) {
-	// create etcd watch chan for reparsing config
 	resp, err := client.Get(fmt.Sprintf("%s/checks", opts.Prefix), true, true)
 	if err != nil {
 		log.Fatalf("Problem fetching Checks from etcd: %s", err)
@@ -252,9 +263,11 @@ func loadChecks(client *etcd.Client) {
 
 	for _, n := range Checks {
 		// signal that monitor to shutdown
+		log.Println("Shutting down ", n.Id)
 		n.Shutdown()
 	}
-	// this clears the slice. we will have to realloc that mem, but gc should get round to it.
+
+	// this clears the slice.
 	Checks = nil
 
 	for _, n := range resp.Node.Nodes {
@@ -282,7 +295,7 @@ func setupEtcd(client *etcd.Client) {
 		if _, err := client.Get(path, false, false); err != nil {
 			log.Printf("Creating dir in etcd: %s ", path)
 			if _, err := client.CreateDir(path, 0); err != nil {
-				log.Fatalf("Couldn't create etcd dir: %s, %s ", err)
+				log.Fatal("Couldn't create etcd dir: ", err)
 			}
 		}
 	}
@@ -308,7 +321,8 @@ func main() {
 		}
 	}
 
-	etcdClient := etcd.NewClient(opts.Etcd)
+	etcdServers := strings.Split(opts.Etcd, ",")
+	etcdClient := etcd.NewClient(etcdServers)
 	setupEtcd(etcdClient)
 
 	watchChan := make(chan *etcd.Response)
