@@ -10,6 +10,7 @@ import (
 	"github.com/kelseyhightower/envconfig"
 	"github.com/rcrowley/go-metrics"
 	"github.com/rcrowley/go-metrics/librato"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -84,6 +85,34 @@ func (c *Check) setupInterval() {
 	c.Interval += rand.Intn(c.Splay)
 }
 
+// Validate takes a response body and runs the check validations on it.
+// the response body will be closed in the process
+func (c *Check) Validate(res *http.Response) (code int, status string) {
+	// let checks set weather this is a crit or not, default is WARN which doesn't trigger sensu
+	errorVal := 1
+	if c.Level == "CRITICAL" {
+		errorVal = 2
+	}
+	body, err := ioutil.ReadAll(res.Body)
+
+	defer res.Body.Close()
+
+	if err != nil {
+		return errorVal, fmt.Sprintf("Error reading response: %s", err.Error())
+	}
+
+	if c.Content != "" && !strings.Contains(string(body), c.Content) {
+		return errorVal, "Content match failed"
+	}
+
+	if c.ContentRegex != nil && !c.ContentRegex.Match(body) {
+		return errorVal, "Content Regex did not match"
+	}
+
+	// everyting is groovy, return ok with status
+	return 0, res.Status
+}
+
 // reportStatus reports if
 func (c *Check) reportStatus(status int, msg string) {
 	s := "Success:"
@@ -129,10 +158,8 @@ func (c *Check) Monitor() {
 			g.Update(int64(time.Since(start)))
 			if err != nil {
 				c.reportStatus(2, err.Error())
-			} else {
-				r.Body.Close()
-				c.reportStatus(0, r.Status)
 			}
+			c.reportStatus(c.Validate(r))
 		}
 	}
 }
