@@ -36,13 +36,13 @@ const (
 )
 
 type Options struct {
-	Etcd     string `short:"e" long:"etcd" description:"Etcd Server url. Comma separate multiple servers" default:"http://localhost:4001"`
-	Prefix   string `short:"p" long:"prefix" description:"the prefix to use in etcd for storing check urls" default:"/urlmon"`
+	Etcd     string `short:"e" long:"etcd" description:"Etcd Server url. Comma separate multiple servers. default:'http://localhost:4001'"`
+	Prefix   string `short:"p" long:"prefix" description:"the prefix to use in etcd for storing check urls. default:'urlmon'"`
 	User     string `short:"u" long:"user" description:"librato user"`
 	Token    string `short:"t" long:"token"  description:"librato token"`
-	Port     int    `short:"P" long:"port"  description:"The port to start the status interface on" default:"9731"`
-	Sensu    string `short:"s" long:"sensu" description:"Sensu client address" default:"localhost:3030"`
-	Handlers string `short:"H" long:"handlers" description:"Sensu handler to use for alert message. comma separatemultiples" default:"hipchat"`
+	Port     int    `short:"P" long:"port"  description:"The port to start the status interface on. default: '0.0.0.0:9731'"`
+	Sensu    string `short:"s" long:"sensu" description:"Sensu client address. default:'localhost:3030'"`
+	Handlers string `short:"H" long:"handlers" description:"Sensu handler to use for alert message. comma separatemultiples. default:'hipchat'"`
 }
 
 type Check struct {
@@ -306,6 +306,29 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, LazyResponse{"checkdata": Checks})
 }
 
+// cliDefaults sets the options to default vaules if env or switches haven't specified them
+func cliDefaults() {
+	if opts.Etcd == "" {
+		opts.Etcd = "http://localhost:4001"
+	}
+
+	if opts.Sensu == "" {
+		opts.Sensu = "localhost:3030"
+	}
+
+	if opts.Handlers == "" {
+		opts.Handlers = "hipchat"
+	}
+
+	if opts.Port == 0 {
+		opts.Port = 9731
+	}
+
+	if opts.Prefix == "" {
+		opts.Prefix = "urlmon"
+	}
+}
+
 func main() {
 	err := envconfig.Process("urlmon", &opts)
 	if err != nil {
@@ -320,6 +343,9 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// make sure defaults after env/parsing has been done
+	cliDefaults()
 
 	etcdServers := strings.Split(opts.Etcd, ",")
 	etcdClient := etcd.NewClient(etcdServers)
