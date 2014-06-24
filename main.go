@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/coreos/go-etcd/etcd"
-	_ "github.com/davecgh/go-spew/spew"
+	//	_ "github.com/davecgh/go-spew/spew"
 	"github.com/jessevdk/go-flags"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/rcrowley/go-metrics"
@@ -15,7 +15,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	//	_ "net/http/pprof"
+	//_ "net/http/pprof"
 	"net/url"
 	"os"
 	"path"
@@ -94,9 +94,6 @@ func (c *Check) Validate(res *http.Response) (code int, status string) {
 		errorVal = 2
 	}
 	body, err := ioutil.ReadAll(res.Body)
-
-	defer res.Body.Close()
-
 	if err != nil {
 		return errorVal, fmt.Sprintf("Error reading response: %s", err.Error())
 	}
@@ -158,8 +155,10 @@ func (c *Check) Monitor() {
 			g.Update(int64(time.Since(start)))
 			if err != nil {
 				c.reportStatus(2, err.Error())
+			} else {
+				c.reportStatus(c.Validate(r))
 			}
-			c.reportStatus(c.Validate(r))
+			r.Body.Close()
 		}
 	}
 }
