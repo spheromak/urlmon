@@ -157,8 +157,8 @@ func (c *Check) Monitor() {
 				c.reportStatus(2, err.Error())
 			} else {
 				c.reportStatus(c.Validate(r))
+				r.Body.Close()
 			}
-			r.Body.Close()
 		}
 	}
 }
