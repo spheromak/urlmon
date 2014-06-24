@@ -1,6 +1,8 @@
 Urlmon - etcd backed concurrent url monitor that alerts to sensu, and emits metrics to librato
 
 This scratches a specific itch I had.  Backend and alerting may be interfaced out in the future. Right now this isminimal impl to solve an immediate need.
+## Switches
+  use --help to get a list of options and defaults. Each options long format can be specified as an allcaps env variable: `URLMON_ETCD="http://test01:4001,http://test01:4002"`
 
 ## Check format
 Check format in etcd:
@@ -9,7 +11,7 @@ Check format in etcd:
       - url   (required)
       - content
       - interval 
-      - spay   
+      - splay   
 
 
 ## Status UI
