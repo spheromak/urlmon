@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/coreos/go-etcd/etcd"
-	//	_ "github.com/davecgh/go-spew/spew"
 	"github.com/jessevdk/go-flags"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/rcrowley/go-metrics"
@@ -15,7 +14,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
-	//_ "net/http/pprof"
+	//	_ "net/http/pprof"
 	"net/url"
 	"os"
 	"path"
@@ -95,11 +94,11 @@ func (c *Check) Validate(res *http.Response) (code int, status string) {
 	}
 	body, err := ioutil.ReadAll(res.Body)
 	if err != nil {
-		return errorVal, fmt.Sprintf("Error reading response: %s", err.Error())
+		return errorVal, fmt.Sprintf("Error reading response body: %s", err.Error())
 	}
 
 	if c.Content != "" && !strings.Contains(string(body), c.Content) {
-		return errorVal, "Content match failed"
+		return errorVal, fmt.Sprintf("Failed to find '%s' in respons body", c.Content)
 	}
 
 	if c.ContentRegex != nil && !c.ContentRegex.Match(body) {
@@ -134,6 +133,10 @@ func (c *Check) Monitor() {
 	// build the splay/random timing into the interval
 	c.setupInterval()
 
+	tr := &http.Transport{
+		DisableKeepAlives: true,
+	}
+	htclient := &http.Client{Transport: tr}
 	// setup the guage
 	g := metrics.NewGauge()
 
@@ -151,7 +154,8 @@ func (c *Check) Monitor() {
 
 			// time.Since reports in nanoseocnds
 			start := time.Now()
-			r, err := http.Get(c.URL.String())
+
+			r, err := htclient.Get(c.URL.String())
 			g.Update(int64(time.Since(start)))
 			if err != nil {
 				c.reportStatus(2, err.Error())
