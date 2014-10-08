@@ -4,16 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/coreos/go-etcd/etcd"
-	"github.com/jessevdk/go-flags"
-	"github.com/kelseyhightower/envconfig"
-	"github.com/rcrowley/go-metrics"
-	"github.com/rcrowley/go-metrics/librato"
 	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
 	"net/http"
+
+	"github.com/coreos/go-etcd/etcd"
+	"github.com/jessevdk/go-flags"
+	"github.com/kelseyhightower/envconfig"
+	"github.com/rcrowley/go-metrics"
+	"github.com/rcrowley/go-metrics/librato"
 	//	_ "net/http/pprof"
 	"net/url"
 	"os"
@@ -398,8 +399,8 @@ func main() {
 
 	// loop and reload checks when etcd changes
 	for {
-		r := <-watchChan
-		log.Printf("Reloading checks from etcd, triggered by '%s' on '%s' with value: '%s' ", r.Action, r.Node.Key, r.Node.Value)
+		<-watchChan
+		log.Printf("Reloading checks from etcd ")
 		loadChecks(etcdClient)
 	}
 }
