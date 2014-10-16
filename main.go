@@ -401,6 +401,7 @@ func main() {
 	for {
 		<-watchChan
 		log.Printf("Reloading checks from etcd ")
-		loadChecks(etcdClient)
+		os.Exit(0)
+		//loadChecks(etcdClient)
 	}
 }
