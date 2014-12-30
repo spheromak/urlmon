@@ -6,4 +6,4 @@ RUN chmod 755 /bin/urlmon
  
 EXPOSE 9731
 
-ENTRYPOINT /bin/urlmon
+ENTRYPOINT [ "/bin/urlmon" ]
