@@ -118,15 +118,18 @@ func (c *Check) reportStatus(status int, msg string) {
 	}
 	log.Println(s, c.Id, c.URL.String(), msg)
 
-	// for now handler is hardcode TODO: move it to default/param/env
-	event := SensuEvent{
-		Name:     c.Id,
-		Output:   fmt.Sprintf("%s::%s", msg, c.URL),
-		Handlers: strings.Split(opts.Handlers, ","),
-		Status:   status,
+	if opts.Sensu != "" {
+		// for now handler is hardcode TODO: move it to default/param/env
+		event := SensuEvent{
+			Name:     c.Id,
+			Output:   fmt.Sprintf("%s::%s", msg, c.URL),
+			Handlers: strings.Split(opts.Handlers, ","),
+			Status:   status,
+		}
+
+		event.send()
 	}
 
-	event.send()
 }
 
 // Monitor sets up the monitoring loop
@@ -341,10 +344,6 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 func cliDefaults() {
 	if opts.Etcd == "" {
 		opts.Etcd = "http://localhost:4001"
-	}
-
-	if opts.Sensu == "" {
-		opts.Sensu = "localhost:3030"
 	}
 
 	if opts.Handlers == "" {
